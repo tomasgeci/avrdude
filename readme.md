@@ -9,6 +9,7 @@ The purpose of this fork is to add better support for Windows to bring it on par
 Noteable changes include:
 
 - Support Atmel AVR programmers out of the box
+- Support Teensy HalfKay bootloader
 - Support Micronucleus bootloader
 - Support COM port discovery via USB VID/PID
 - Support Arduino Leonardo bootloader auto-reset
@@ -31,6 +32,26 @@ This build does not rely on **libusb** drivers. Instead the default Atmel driver
 
 If you previously changed the driver of your programmer to libusb, you should use **Windows Device Manager** to uninstall the device, and then reinstall using the default Windows drivers.
 
+### Support Teensy HalfKay bootloader
+
+This build adds support for the [Teensy HalfKay bootloader](https://www.pjrc.com/teensy/halfkay_protocol.html), so you do no longer need a the Teensy Loader tool when working with Teensy devices.
+
+Since this bootloader is optimized for size, it implements writing to flash memory only.
+As it does not support reading, use the -V option to prevent AVRDUDE from verifing the flash memory. To have AVRDUDE wait for the device to be connected, use the extended option '-x wait'.
+
+Supported devices are:
+
+- Teensy 1.0 (AT90USB162)
+- Teensy 2.0 (ATmega32U4)
+- Teensy++ 1.0 (AT90USB646)
+- Teensy++ 2.0 (AT90USB1286)
+
+#### Example: Flashing a Teensy 2.0 device
+
+```bash
+avrdude -c teensy -p m32u4 -x wait -V -U flash:w:main.hex:i
+```
+
 ### Support Micronucleus bootloader
 
 This build adds support for the [Micronucleus bootloader](https://github.com/micronucleus/micronucleus), so you do no longer need a separate command-line utility when working with devices that use the Micronucleus bootloader.
@@ -44,7 +65,7 @@ As it does not support reading, use the -V option to prevent AVRDUDE from verifi
 #### Example: Flashing a Micronucleus bootloader device
 
 ```bash
-AVRDUDE -c micronucleus -p t85 -x wait -V -U flash:w:main.hex:i
+avrdude -c micronucleus -p t85 -x wait -V -U flash:w:main.hex:i
 ```
 
 ### Support COM port discovery via USB VID/PID
