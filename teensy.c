@@ -67,10 +67,11 @@ typedef struct pdata
     // Bootloader info (from hid_usage)
     const char* board;
     uint32_t flash_size;
-    uint16_t block_size;
+    uint16_t page_size;
     uint8_t sig_bytes[3];
     // State
-    bool first_write;
+    bool erase_flash;
+    bool reboot;
 } pdata_t;
 
 //-----------------------------------------------------------------------------
@@ -80,14 +81,14 @@ static void delay_ms(uint32_t duration)
     usleep(duration * 1000);
 }
 
-static int teensy_get_bootloader_info(pdata_t* pdata)
+static int teensy_get_bootloader_info(pdata_t* pdata, AVRPART* p)
 {
     switch (pdata->hid_usage)
     {
     case 0x19:
         pdata->board = "Teensy 1.0 (AT90USB162)";
         pdata->flash_size = 0x4000 - 0x200;
-        pdata->block_size = 128;
+        pdata->page_size = 128;
         pdata->sig_bytes[0] = 0x1E;
         pdata->sig_bytes[1] = 0x94;
         pdata->sig_bytes[2] = 0x82;
@@ -95,7 +96,7 @@ static int teensy_get_bootloader_info(pdata_t* pdata)
     case 0x1A:
         pdata->board = "Teensy++ 1.0 (AT90USB646)";
         pdata->flash_size = 0x10000 - 0x400;
-        pdata->block_size = 256;
+        pdata->page_size = 256;
         pdata->sig_bytes[0] = 0x1E;
         pdata->sig_bytes[1] = 0x96;
         pdata->sig_bytes[2] = 0x82;
@@ -103,7 +104,7 @@ static int teensy_get_bootloader_info(pdata_t* pdata)
     case 0x1B:
         pdata->board = "Teensy 2.0 (ATmega32U4)";
         pdata->flash_size = 0x8000 - 0x200;
-        pdata->block_size = 128;
+        pdata->page_size = 128;
         pdata->sig_bytes[0] = 0x1E;
         pdata->sig_bytes[1] = 0x95;
         pdata->sig_bytes[2] = 0x87;
@@ -111,15 +112,41 @@ static int teensy_get_bootloader_info(pdata_t* pdata)
     case 0x1C:
         pdata->board = "Teensy++ 2.0 (AT90USB1286)";
         pdata->flash_size = 0x20000 - 0x400;
-        pdata->block_size = 256;
+        pdata->page_size = 256;
         pdata->sig_bytes[0] = 0x1E;
         pdata->sig_bytes[1] = 0x97;
         pdata->sig_bytes[2] = 0x82;
         break;
     default:
-        avrdude_message(MSG_INFO, "%s: ERROR: Teensy board not supported (HID usage 0x%02X)",
-            progname, pdata->hid_usage);
-        return -1;
+        if (pdata->hid_usage == 0)
+        {
+            // On Linux, libhidapi does not seem to return the HID usage from the report descriptor.
+            // We try to infer the board from the part information, until somebody fixes libhidapi.
+            // To use this workaround, the -F option is required.
+            avrdude_message(MSG_INFO, "%s: WARNING: Cannot detect board type (HID usage is 0)\n", progname);
+
+            AVRMEM* mem = avr_locate_mem(p, "flash");
+            if (mem == NULL)
+            {
+                avrdude_message(MSG_INFO, "No flash memory for part %s\n", p->desc);
+                return -1;
+            }
+
+            pdata->board = "Unknown Board";
+            pdata->flash_size = mem->size - (mem->size < 0x10000 ? 0x200 : 0x400);
+            pdata->page_size = mem->page_size;
+
+            // Pass an invalid signature to require -F option.
+            pdata->sig_bytes[0] = 0x1E;
+            pdata->sig_bytes[1] = 0x00;
+            pdata->sig_bytes[2] = 0x00;
+        }
+        else
+        {
+            avrdude_message(MSG_INFO, "%s: ERROR: Teensy board not supported (HID usage 0x%02X)\n",
+                progname, pdata->hid_usage);
+            return -1;
+        }
     }
 
     return 0;
@@ -130,22 +157,22 @@ static void teensy_dump_device_info(pdata_t* pdata)
     avrdude_message(MSG_NOTICE, "%s: HID usage: 0x%02X\n", progname, pdata->hid_usage);
     avrdude_message(MSG_NOTICE, "%s: Board: %s\n", progname, pdata->board);
     avrdude_message(MSG_NOTICE, "%s: Available flash size: %u\n", progname, pdata->flash_size);
-    avrdude_message(MSG_NOTICE, "%s: Page size: %u\n", progname, pdata->block_size);
+    avrdude_message(MSG_NOTICE, "%s: Page size: %u\n", progname, pdata->page_size);
     avrdude_message(MSG_NOTICE, "%s: Signature: 0x%02X%02X%02X\n", progname,
         pdata->sig_bytes[0], pdata->sig_bytes[1], pdata->sig_bytes[2]);
 }
 
-static int teensy_write_block(pdata_t* pdata, uint32_t address, const uint8_t* buffer, uint32_t size)
+static int teensy_write_page(pdata_t* pdata, uint32_t address, const uint8_t* buffer, uint32_t size)
 {
-    avrdude_message(MSG_DEBUG, "%s: teensy_write_block(address=0x%04X, size=%d)\n", progname, address, size);
+    avrdude_message(MSG_DEBUG, "%s: teensy_write_page(address=0x%06X, size=%d)\n", progname, address, size);
 
-    if (size > pdata->block_size)
+    if (size > pdata->page_size)
     {
-        avrdude_message(MSG_INFO, "%s: ERROR: Invalid block size: %u\n", progname, size);
+        avrdude_message(MSG_INFO, "%s: ERROR: Invalid page size: %u\n", progname, pdata->page_size);
         return -1;
     }
 
-    size_t report_size = 1 + 2 + (size_t)pdata->block_size;
+    size_t report_size = 1 + 2 + (size_t)pdata->page_size;
     uint8_t* report = (uint8_t*)malloc(report_size);
     if (report == NULL)
     {
@@ -154,7 +181,7 @@ static int teensy_write_block(pdata_t* pdata, uint32_t address, const uint8_t* b
     }
 
     report[0] = 0; // report number
-    if (pdata->block_size <= 256 && pdata->flash_size < 0x10000)
+    if (pdata->page_size <= 256 && pdata->flash_size < 0x10000)
     {
         report[1] = (uint8_t)(address >> 0);
         report[2] = (uint8_t)(address >> 8);
@@ -165,7 +192,11 @@ static int teensy_write_block(pdata_t* pdata, uint32_t address, const uint8_t* b
         report[2] = (uint8_t)(address >> 16);
     }
 
-    memcpy(report + 1 + 2, buffer, size);
+    if (size > 0)
+    {
+        memcpy(report + 1 + 2, buffer, size);
+    }
+
     memset(report + 1 + 2 + size, 0xFF, report_size - (1 + 2 + size));
 
     int result = hid_write(pdata->hid_handle, report, report_size);
@@ -177,36 +208,23 @@ static int teensy_write_block(pdata_t* pdata, uint32_t address, const uint8_t* b
         return result;
     }
 
-    pdata->first_write = false;
-
     return 0;
+}
+
+static int teensy_erase_flash(pdata_t* pdata)
+{
+    avrdude_message(MSG_DEBUG, "%s: teensy_erase_flash()\n", progname);
+
+    // Write a dummy page at address 0 to explicitly erase the flash.
+    return teensy_write_page(pdata, 0, NULL, 0);
 }
 
 static int teensy_reboot(pdata_t* pdata)
 {
     avrdude_message(MSG_DEBUG, "%s: teensy_reboot()\n", progname);
 
-    size_t report_size = 1 + 2 + (size_t)pdata->block_size;
-    uint8_t* report = (uint8_t*)malloc(report_size);
-    if (report == NULL)
-    {
-        avrdude_message(MSG_INFO, "%s: ERROR: Failed to allocate memory\n", progname);
-        return -1;
-    }
-
-    report[0] = 0; // report number
-    memset(report + 1, 0xFF, report_size - 1);
-
-    int result = hid_write(pdata->hid_handle, report, report_size);
-    free(report);
-    if (result < 0)
-    {
-        avrdude_message(MSG_INFO, "%s: WARNING: Failed to issue reboot command: %ls\n",
-            progname, hid_error(pdata->hid_handle));
-        return result;
-    }
-
-    return 0;
+    // Write a dummy page at address -1 to reboot the Teensy.
+    return teensy_write_page(pdata, 0xFFFFFFFF, NULL, 0);
 }
 
 //-----------------------------------------------------------------------------
@@ -215,9 +233,9 @@ static void teensy_setup(PROGRAMMER* pgm)
 {
     avrdude_message(MSG_DEBUG, "%s: teensy_setup()\n", progname);
 
-    if ((pgm->cookie = malloc(sizeof(pdata_t))) == 0)
+    if ((pgm->cookie = malloc(sizeof(pdata_t))) == NULL)
     {
-        avrdude_message(MSG_INFO, "%s: teensy_setup(): Out of memory allocating private data\n", progname);
+        avrdude_message(MSG_INFO, "%s: ERROR: Failed to allocate memory\n", progname);
         exit(1);
     }
 
@@ -236,7 +254,7 @@ static int teensy_initialize(PROGRAMMER* pgm, AVRPART* p)
 
     pdata_t* pdata = PDATA(pgm);
 
-    int result = teensy_get_bootloader_info(pdata);
+    int result = teensy_get_bootloader_info(pdata, p);
     if (result < 0)
         return result;
 
@@ -260,7 +278,18 @@ static void teensy_powerdown(PROGRAMMER* pgm)
     avrdude_message(MSG_DEBUG, "%s: teensy_powerdown()\n", progname);
 
     pdata_t* pdata = PDATA(pgm);
-    teensy_reboot(pdata);
+
+    if (pdata->erase_flash)
+    {
+        teensy_erase_flash(pdata);
+        pdata->erase_flash = false;
+    }
+
+    if (pdata->reboot)
+    {
+        teensy_reboot(pdata);
+        pdata->reboot = false;
+    }
 }
 
 static void teensy_enable(PROGRAMMER* pgm)
@@ -285,7 +314,7 @@ static int teensy_read_sig_bytes(PROGRAMMER* pgm, AVRPART* p, AVRMEM* mem)
 
     if (mem->size < 3)
     {
-        avrdude_message(MSG_INFO, "%s: memory size too small for read_sig_bytes", progname);
+        avrdude_message(MSG_INFO, "%s: memory size too small for read_sig_bytes\n", progname);
         return -1;
     }
 
@@ -298,6 +327,12 @@ static int teensy_read_sig_bytes(PROGRAMMER* pgm, AVRPART* p, AVRMEM* mem)
 static int teensy_chip_erase(PROGRAMMER* pgm, AVRPART* p)
 {
     avrdude_message(MSG_DEBUG, "%s: teensy_chip_erase()\n", progname);
+
+    pdata_t* pdata = PDATA(pgm);
+
+    // Schedule a chip erase, either at first write or on powerdown.
+    pdata->erase_flash = true;
+
     return 0;
 }
 
@@ -472,7 +507,32 @@ static int teensy_paged_write(PROGRAMMER* pgm, AVRPART* p, AVRMEM* mem,
             return -1;
         }
 
-        return teensy_write_block(pdata, addr, mem->buf + addr, n_bytes);
+        if (pdata->erase_flash)
+        {
+            // Writing page 0 will automatically erase the flash.
+            // If mem does not contain a page at address 0, write a dummy page at address 0.
+            if (addr != 0)
+            {
+                int result = teensy_erase_flash(pdata);
+                if (result < 0)
+                {
+                    return result;
+                }
+            }
+
+            pdata->erase_flash = false;
+        }
+
+        int result = teensy_write_page(pdata, addr, mem->buf + addr, n_bytes);
+        if (result < 0)
+        {
+            return result;
+        }
+
+        // Schedule a reboot.
+        pdata->reboot = true;
+
+        return result;
     }
     else
     {
@@ -506,7 +566,7 @@ static int teensy_parseextparams(PROGRAMMER* pgm, LISTID xparams)
 
 void teensy_initpgm(PROGRAMMER* pgm)
 {
-    strcpy(pgm->type, "Teensy V2.0");
+    strcpy(pgm->type, "teensy");
 
     pgm->setup = teensy_setup;
     pgm->teardown = teensy_teardown;

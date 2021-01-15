@@ -9,8 +9,8 @@ The purpose of this fork is to add better support for Windows to bring it on par
 Noteable changes include:
 
 - Support Atmel AVR programmers out of the box
-- Support Teensy HalfKay bootloader
 - Support Micronucleus bootloader
+- Support Teensy HalfKay bootloader
 - Support COM port discovery via USB VID/PID
 - Support Arduino Leonardo bootloader auto-reset
 - Support WinUSB devices via custom libusb
@@ -18,6 +18,12 @@ Noteable changes include:
 - Support HID devices via libhidapi
 - Support Visual Studio
 - Miscellaneous bug-fixes and patches
+
+## Download
+
+To get the latest version of **AVRDUDE for Windows**, go to the [releases folder](https://github.com/mariusgreuel/avrdude/releases):
+
+<https://github.com/mariusgreuel/avrdude/releases>
 
 ## Feature Details
 
@@ -31,6 +37,22 @@ This build contains support for Atmel AVR programmers, such as
 This build does not rely on **libusb** drivers. Instead the default Atmel drivers are used, allowing you to use AVRDUDE and Atmel Studio 7 side-by-side, without switch drivers.
 
 If you previously changed the driver of your programmer to libusb, you should use **Windows Device Manager** to uninstall the device, and then reinstall using the default Windows drivers.
+
+### Support Micronucleus bootloader
+
+This build adds support for the [Micronucleus bootloader](https://github.com/micronucleus/micronucleus), so you do no longer need a separate command-line utility when working with devices that use the Micronucleus bootloader.
+
+The Micronucleus bootloader is typically used on small ATtiny boards, such as **Digispark** (ATtiny85), **Digispark Pro** (ATtiny167), and the respective clones.
+By default, it uses the USB VID/PID **16D0:0753** (MCS Digistump).
+
+Since this bootloader is optimized for size, it implements writing to flash memory only.
+As it does not support reading, use the -V option to prevent AVRDUDE from verifing the flash memory. To have AVRDUDE wait for the device to be connected, use the extended option '-x wait'.
+
+#### Example: Flashing a Micronucleus bootloader device
+
+```bash
+avrdude -c micronucleus -p t85 -x wait -V -U flash:w:main.hex:i
+```
 
 ### Support Teensy HalfKay bootloader
 
@@ -50,22 +72,6 @@ Supported devices are:
 
 ```bash
 avrdude -c teensy -p m32u4 -x wait -V -U flash:w:main.hex:i
-```
-
-### Support Micronucleus bootloader
-
-This build adds support for the [Micronucleus bootloader](https://github.com/micronucleus/micronucleus), so you do no longer need a separate command-line utility when working with devices that use the Micronucleus bootloader.
-
-The Micronucleus bootloader is typically used on small ATtiny boards, such as **Digispark** (ATtiny85), **Digispark Pro** (ATtiny167), and the respective clones.
-By default, it uses the USB VID/PID **16D0:0753** (MCS Digistump).
-
-Since this bootloader is optimized for size, it implements writing to flash memory only.
-As it does not support reading, use the -V option to prevent AVRDUDE from verifing the flash memory. To have AVRDUDE wait for the device to be connected, use the extended option '-x wait'.
-
-#### Example: Flashing a Micronucleus bootloader device
-
-```bash
-avrdude -c micronucleus -p t85 -x wait -V -U flash:w:main.hex:i
 ```
 
 ### Support COM port discovery via USB VID/PID
@@ -178,13 +184,17 @@ Note: The folder `msvc\generated` includes pre-built files from the AVRDUDE conf
 
 ### Building AVRDUDE for Linux
 
+Note that the AVRDUDE for Linux version does not contain all extra Windows features. The features that have been added to the stock version of AVRDUDE include:
+
+- Support Micronucleus bootloader
+- Support Teensy HalfKay bootloader
+
 #### Linux Prerequisites
 
-In order to build AVRDUDE on Linux, you need the following packages:
+In order to build AVRDUDE on Linux, you need to install the following packages:
 
 ```bash
-sudo apt install make gcc automake libtool flex bison
-sudo apt install libelf-dev libusb-dev libftdi1-dev libhidapi-dev
+sudo apt install git make gcc automake libtool flex bison libelf-dev libusb-dev libftdi1-dev libhidapi-dev
 ```
 
 #### Linux Build Instructions
@@ -197,6 +207,12 @@ cd avrdude
 ./bootstrap
 ./configure
 make
+```
+
+To install a local build of AVRDUDE on your system, run the following command:
+
+```bash
+sudo make install
 ```
 
 ## Troubleshooting Tips & Tricks
